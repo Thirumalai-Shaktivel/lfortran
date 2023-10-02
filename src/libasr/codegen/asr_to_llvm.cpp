@@ -353,6 +353,27 @@ public:
                 type_encoding = llvm::dwarf::DW_ATE_float;
                 break;
             }
+            case ASR::ttypeType::Character: {
+                type_name = "char";
+                type_encoding = llvm::dwarf::DW_ATE_signed_char;
+                break;
+            }
+            case ASR::ttypeType::Allocatable:
+            case ASR::ttypeType::Pointer: {
+                type_name = "pointer";
+                type_encoding = llvm::dwarf::DW_ATE_address;
+                break;
+            }
+            case ASR::ttypeType::Array: {
+                type_name = "array";
+                type_encoding = llvm::dwarf::DW_TAG_array_type;
+                break;
+            }
+            case ASR::ttypeType::Struct: {
+                type_name = "struct";
+                type_encoding = llvm::dwarf::DW_TAG_structure_type;
+                break;
+            }
             default : throw LCompilersException("Debug information for the type: `"
                 + ASRUtils::type_to_str_python(t) + "` is not yet implemented");
         }
@@ -373,6 +394,7 @@ public:
 
     template <typename T>
     void debug_emit_loc(const T &x) {
+        if (!debug_current_scope) return;
         Location loc = x.base.base.loc;
         uint32_t line, column;
         if (compiler_options.emit_debug_line_column) {
@@ -400,7 +422,7 @@ public:
         }
         std::string fn_debug_name = x.m_name;
         llvm::DIBasicType *return_type_info = nullptr;
-        if constexpr (std::is_same_v<T, ASR::Function_t>){
+        if constexpr (std::is_same_v<T, ASR::Function_t>) {
             if(x.m_return_var != nullptr) {
                 std::string type_name; uint32_t type_size, type_encoding;
                 get_type_debug_info(ASRUtils::expr_type(x.m_return_var),
@@ -411,6 +433,8 @@ public:
         } else if constexpr (std::is_same_v<T, ASR::Program_t>) {
             return_type_info = DBuilder->createBasicType("integer", 32,
                 llvm::dwarf::DW_ATE_signed);
+        } else {
+            throw CodeGenError("Unhandled symbol type: " + std::string(x.type));
         }
         llvm::DISubroutineType *return_type = DBuilder->createSubroutineType(
             DBuilder->getOrCreateTypeArray(return_type_info));
@@ -3312,7 +3336,7 @@ public:
     template<typename T>
     void declare_vars(const T &x, bool create_vtabs=true) {
         llvm::Value *target_var;
-        uint32_t debug_arg_count = 0;
+        // uint32_t debug_arg_count = 0;
         std::vector<std::string> var_order = ASRUtils::determine_variable_declaration_order(x.m_symtab);
         if( create_vtabs ) {
             std::set<std::string> class_type_names;
@@ -3448,27 +3472,27 @@ public:
                             allocate_array_members_of_struct(ptr, v->m_type);
                         }
                     }
-                    if (compiler_options.emit_debug_info) {
-                        // Reset the debug location
-                        builder->SetCurrentDebugLocation(nullptr);
-                        uint32_t line, column;
-                        if (compiler_options.emit_debug_line_column) {
-                            debug_get_line_column(v->base.base.loc.first, line, column);
-                        } else {
-                            line = v->base.base.loc.first;
-                            column = 0;
-                        }
-                        std::string type_name;
-                        uint32_t type_size, type_encoding;
-                        get_type_debug_info(v->m_type, type_name, type_size,
-                            type_encoding);
-                        llvm::DILocalVariable *debug_var = DBuilder->createParameterVariable(
-                            debug_current_scope, v->m_name, ++debug_arg_count, debug_Unit, line,
-                            DBuilder->createBasicType(type_name, type_size, type_encoding), true);
-                        DBuilder->insertDeclare(ptr, debug_var, DBuilder->createExpression(),
-                            llvm::DILocation::get(debug_current_scope->getContext(),
-                            line, 0, debug_current_scope), builder->GetInsertBlock());
-                    }
+                    // if (debug_current_scope && compiler_options.emit_debug_info) {
+                    //     // Reset the debug location
+                    //     builder->SetCurrentDebugLocation(nullptr);
+                    //     uint32_t line, column;
+                    //     if (compiler_options.emit_debug_line_column) {
+                    //         debug_get_line_column(v->base.base.loc.first, line, column);
+                    //     } else {
+                    //         line = v->base.base.loc.first;
+                    //         column = 0;
+                    //     }
+                    //     std::string type_name;
+                    //     uint32_t type_size, type_encoding;
+                    //     get_type_debug_info(v->m_type, type_name, type_size,
+                    //         type_encoding);
+                    //     llvm::DILocalVariable *debug_var = DBuilder->createParameterVariable(
+                    //         debug_current_scope, v->m_name, ++debug_arg_count, debug_Unit, line,
+                    //         DBuilder->createBasicType(type_name, type_size, type_encoding), true);
+                    //     DBuilder->insertDeclare(ptr, debug_var, DBuilder->createExpression(),
+                    //         llvm::DILocation::get(debug_current_scope->getContext(),
+                    //         line, 0, debug_current_scope), builder->GetInsertBlock());
+                    // }
 
                     if( ASR::is_a<ASR::Struct_t>(*v->m_type) ) {
                         ASR::Struct_t* struct_t = ASR::down_cast<ASR::Struct_t>(v->m_type);
@@ -3695,7 +3719,7 @@ public:
     void instantiate_function(const ASR::Function_t &x){
         uint32_t h = get_hash((ASR::asr_t*)&x);
         llvm::Function *F = nullptr;
-        llvm::DISubprogram *SP;
+        llvm::DISubprogram *SP = nullptr;
         std::string sym_name = x.m_name;
         if (sym_name == "main") {
             sym_name = "_xx_lcompilers_changed_main_xx";
@@ -3735,19 +3759,26 @@ public:
                     llvm::Function::ExternalLinkage, fn_name, module.get());
 
                 // Add Debugging information to the LLVM function F
-                if (compiler_options.emit_debug_info) {
+                if (compiler_options.emit_debug_info
+                    && ASRUtils::get_FunctionType(x)->m_abi != ASR::abiType::BindC
+                    && ASRUtils::get_FunctionType(x)->m_abi != ASR::abiType::Intrinsic
+                ) {
                     debug_emit_function(x, SP);
                     F->setSubprogram(SP);
                 }
             } else {
                 uint32_t old_h = llvm_symtab_fn_names[fn_name];
                 F = llvm_symtab_fn[old_h];
-                if (compiler_options.emit_debug_info) {
+                if (compiler_options.emit_debug_info &&
+                    llvm_symtab_fn_discope.find(old_h) != llvm_symtab_fn_discope.end()
+                ) {
                     SP = (llvm::DISubprogram*) llvm_symtab_fn_discope[old_h];
                 }
             }
             llvm_symtab_fn[h] = F;
-            if (compiler_options.emit_debug_info) llvm_symtab_fn_discope[h] = SP;
+            if (SP && compiler_options.emit_debug_info) {
+                llvm_symtab_fn_discope[h] = SP;
+            }
 
             // Instantiate (pre-declare) all nested interfaces
             for (auto &item : x.m_symtab->get_scope()) {
@@ -3780,12 +3811,18 @@ public:
         uint32_t h = get_hash((ASR::asr_t*)&x);
         parent_function = &x;
         llvm::Function* F = llvm_symtab_fn[h];
-        if (compiler_options.emit_debug_info) debug_current_scope = llvm_symtab_fn_discope[h];
+        if (compiler_options.emit_debug_info &&
+            llvm_symtab_fn_discope.find(h) != llvm_symtab_fn_discope.end()
+        ) {
+            debug_current_scope = llvm_symtab_fn_discope[h];
+            debug_emit_loc(x);
+        } else {
+            debug_current_scope = nullptr;
+        }
         proc_return = llvm::BasicBlock::Create(context, "return");
         llvm::BasicBlock *BB = llvm::BasicBlock::Create(context,
                 ".entry", F);
         builder->SetInsertPoint(BB);
-        if (compiler_options.emit_debug_info) debug_emit_loc(x);
         declare_args(x, *F);
         declare_local_vars(x);
     }
