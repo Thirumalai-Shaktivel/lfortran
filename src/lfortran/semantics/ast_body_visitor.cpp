@@ -93,7 +93,6 @@ public:
 
     // Transforms statements to a list of ASR statements
     // In addition, it also inserts the following nodes if needed:
-    //   * ImplicitDeallocate
     //   * GoToTarget
     // The `body` Vec must already be reserved
     void transform_stmts(Vec<ASR::stmt_t*> &body, size_t n_body, AST::stmt_t **m_body) {
@@ -113,12 +112,6 @@ public:
             this->visit_stmt(*m_body[i]);
             if (tmp != nullptr) {
                 ASR::stmt_t* tmp_stmt = ASRUtils::STMT(tmp);
-                if (tmp_stmt->type == ASR::stmtType::SubroutineCall) {
-                    ASR::stmt_t* impl_decl = create_implicit_deallocate_subrout_call(tmp_stmt);
-                    if (impl_decl != nullptr) {
-                        body.push_back(al, impl_decl);
-                    }
-                }
                 body.push_back(al, tmp_stmt);
             } else if (!tmp_vec.empty()) {
                 for(auto &x: tmp_vec) {
@@ -1051,30 +1044,6 @@ public:
                                     stat, errmsg, source);
     }
 
-// If there are allocatable variables in the local scope it inserts an ImplicitDeallocate node
-// with their list. The ImplicitDeallocate node will deallocate them if they are allocated,
-// otherwise does nothing.
-    ASR::stmt_t* create_implicit_deallocate(const Location& loc) {
-        Vec<ASR::expr_t*> del_syms;
-        del_syms.reserve(al, 0);
-        for( auto& item: current_scope->get_scope() ) {
-            if( item.second->type == ASR::symbolType::Variable ) {
-                const ASR::symbol_t* sym = ASRUtils::symbol_get_past_external(item.second);
-                ASR::Variable_t* var = ASR::down_cast<ASR::Variable_t>(sym);
-                if( ASR::is_a<ASR::Allocatable_t>(*var->m_type) &&
-                    var->m_intent == ASR::intentType::Local ) {
-                    del_syms.push_back(al, ASRUtils::EXPR(ASR::make_Var_t(al, loc, item.second)));
-                }
-            }
-        }
-        if( del_syms.size() == 0 ) {
-            return nullptr;
-        }
-
-        return ASRUtils::STMT(ASR::make_ImplicitDeallocate_t(al, loc,
-                    del_syms.p, del_syms.size()));
-    }
-
     inline void check_for_deallocation(ASR::symbol_t* tmp_sym, const Location& loc) {
         tmp_sym = ASRUtils::symbol_get_past_external(tmp_sym);
         if( !ASR::is_a<ASR::Variable_t>(*tmp_sym) ) {
@@ -1510,10 +1479,6 @@ public:
 
         transform_stmts(body, x.n_body, x.m_body);
         handle_format();
-        ASR::stmt_t* impl_del = create_implicit_deallocate(x.base.base.loc);
-        if( impl_del != nullptr ) {
-            body.push_back(al, impl_del);
-        }
         v->m_body = body.p;
         v->n_body = body.size();
 
@@ -1528,41 +1493,6 @@ public:
         remove_common_variable_declarations(current_scope);
         current_scope = old_scope;
         tmp = nullptr;
-    }
-
-    ASR::stmt_t* create_implicit_deallocate_subrout_call(ASR::stmt_t* x) {
-        ASR::SubroutineCall_t* subrout_call = ASR::down_cast<ASR::SubroutineCall_t>(x);
-        const ASR::symbol_t* subrout_sym = ASRUtils::symbol_get_past_external(subrout_call->m_name);
-        if( ! ASR::is_a<ASR::Function_t>(*subrout_sym)
-            || ASR::down_cast<ASR::Function_t>(subrout_sym)->m_return_var != nullptr ) {
-            return nullptr;
-        }
-        ASR::Function_t* subrout = ASR::down_cast<ASR::Function_t>(subrout_sym);
-        Vec<ASR::expr_t*> del_syms;
-        del_syms.reserve(al, 1);
-        for( size_t i = 0; i < subrout_call->n_args; i++ ) {
-            if( subrout_call->m_args[i].m_value &&
-                subrout_call->m_args[i].m_value->type == ASR::exprType::Var ) {
-                const ASR::Var_t* arg_var = ASR::down_cast<ASR::Var_t>(subrout_call->m_args[i].m_value);
-                const ASR::symbol_t* sym = ASRUtils::symbol_get_past_external(arg_var->m_v);
-                if( sym->type == ASR::symbolType::Variable ) {
-                    ASR::Variable_t* var = ASR::down_cast<ASR::Variable_t>(sym);
-                    const ASR::Var_t* orig_arg_var = ASR::down_cast<ASR::Var_t>(subrout->m_args[i]);
-                    const ASR::symbol_t* orig_sym = ASRUtils::symbol_get_past_external(orig_arg_var->m_v);
-                    ASR::Variable_t* orig_var = ASR::down_cast<ASR::Variable_t>(orig_sym);
-                    if( ASR::is_a<ASR::Allocatable_t>(*var->m_type) &&
-                        ASR::is_a<ASR::Allocatable_t>(*orig_var->m_type) &&
-                        orig_var->m_intent == ASR::intentType::Out ) {
-                        del_syms.push_back(al, ASRUtils::EXPR(ASR::make_Var_t(al, x->base.loc, arg_var->m_v)));
-                    }
-                }
-            }
-        }
-        if( del_syms.size() == 0 ) {
-            return nullptr;
-        }
-        return ASRUtils::STMT(ASR::make_ImplicitDeallocate_t(al, x->base.loc,
-                    del_syms.p, del_syms.size()));
     }
 
     void visit_Entry(const AST::Entry_t& /*x*/) {
@@ -1720,12 +1650,6 @@ public:
             ASR::stmt_t* tmp_stmt = nullptr;
             if (tmp != nullptr) {
                 tmp_stmt = ASRUtils::STMT(tmp);
-                if (tmp_stmt->type == ASR::stmtType::SubroutineCall) {
-                    ASR::stmt_t* impl_decl = create_implicit_deallocate_subrout_call(tmp_stmt);
-                    if (impl_decl != nullptr) {
-                        stmt_vector.push_back(impl_decl);
-                    }
-                }
                 if (tmp_stmt->type == ASR::stmtType::Assignment) {
                     // if it is an assignment to any of the entry function return variables, then
                     // make an assignment to return variable of master function
@@ -1910,10 +1834,6 @@ public:
             func_deps.push_back(al, s2c(al, itr));
         }
         current_function_dependencies = current_function_dependencies_copy;
-        ASR::stmt_t* impl_del = create_implicit_deallocate(x.base.base.loc);
-        if( impl_del != nullptr ) {
-            body.push_back(al, impl_del);
-        }
         v->m_body = body.p;
         v->n_body = body.size();
         v->m_dependencies = func_deps.p;
@@ -1984,10 +1904,6 @@ public:
             func_deps.push_back(al, s2c(al, itr));
         }
         current_function_dependencies = current_function_dependencies_copy;
-        ASR::stmt_t* impl_del = create_implicit_deallocate(x.base.base.loc);
-        if( impl_del != nullptr ) {
-            body.push_back(al, impl_del);
-        }
         v->m_body = body.p;
         v->n_body = body.size();
         v->m_dependencies = func_deps.p;
