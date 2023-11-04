@@ -16,17 +16,39 @@ class InsertDeallocate: public ASR::CallReplacerOnExpressionsVisitor<InsertDeall
     private:
 
         Allocator& al;
+        Vec<ASR::symbol_t *> already_deallocated;
 
     public:
 
         InsertDeallocate(Allocator& al_) : al(al_) {}
 
+        void visit_ExplicitDeallocate(const ASR::ExplicitDeallocate_t &x) {
+            for (size_t i = 0; i < x.n_vars; i ++) {
+                ASR::symbol_t *sym = ASR::down_cast<ASR::Var_t>(x.m_vars[i])->m_v;
+                already_deallocated.push_back(al, sym);
+            }
+        }
+
         template <typename T>
         void visit_Symbol(const T& x) {
+            already_deallocated.reserve(al, 1);
+            for (size_t i = 0; i < x.n_body; i ++) {
+                // visit Explicit_Deallocate
+                if (ASR::is_a<ASR::ExplicitDeallocate_t>(*x.m_body[i])) {
+                    visit_stmt(*x.m_body[i]);
+                }
+            }
             Vec<ASR::expr_t*> to_be_deallocated;
             to_be_deallocated.reserve(al, 1);
             for( auto& itr: x.m_symtab->get_scope() ) {
-                if( ASR::is_a<ASR::Variable_t>(*itr.second) &&
+                bool deallocate = true;
+                for (auto &item: already_deallocated) {
+                    if ( item == itr.second ) {
+                        deallocate = false;
+                        break;
+                    }
+                }
+                if( deallocate && ASR::is_a<ASR::Variable_t>(*itr.second) &&
                     ASR::is_a<ASR::Allocatable_t>(*ASRUtils::symbol_type(itr.second)) &&
                     ASRUtils::is_array(ASRUtils::symbol_type(itr.second)) &&
                     ASRUtils::symbol_intent(itr.second) == ASRUtils::intent_local ) {
