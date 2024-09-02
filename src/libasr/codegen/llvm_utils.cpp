@@ -131,7 +131,7 @@ namespace LCompilers {
         CompilerOptions &compiler_options_,
         std::unordered_map<std::uint32_t, std::unordered_map<std::string, llvm::Type*>>& arr_arg_type_cache_,
         std::map<std::string, std::pair<llvm::Type*, llvm::Type*>>& fname2arg_type_,
-        std::map<llvm::Value *, llvm::Type *> ptr_type_):
+        std::map<llvm::Value *, llvm::Type *> &ptr_type_):
         context(context), builder(std::move(_builder)), str_cmp_itr(nullptr), der_type_name(der_type_name_),
         name2dertype(name2dertype_), name2dercontext(name2dercontext_),
         struct_type_stack(struct_type_stack_), dertype2parent(dertype2parent_),
@@ -1597,7 +1597,8 @@ namespace LCompilers {
             type_copy = type = ptr_type[x];
         }
         LCOMPILERS_ASSERT(type);
-        if (((llvm::AllocaInst *)x)->getAllocatedType()->isPointerTy()) {
+        if (llvm::isa<llvm::AllocaInst>(x) && llvm::dyn_cast<llvm::AllocaInst>(
+                x)->getAllocatedType()->isPointerTy()) {
             type = type->getPointerTo();
         }
         llvm::Value *load = LLVM::CreateLoad2(*builder, type, x);
@@ -1618,6 +1619,7 @@ namespace LCompilers {
         if (ptr_type.find(ds) != ptr_type.end()) {
             type = ptr_type[ds];
         }
+        LCOMPILERS_ASSERT(type);
         return LLVM::CreateGEP2(*builder, type, ds, idx_vec);
     }
 
