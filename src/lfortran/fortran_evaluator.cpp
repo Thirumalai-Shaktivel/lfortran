@@ -546,7 +546,8 @@ Result<std::unique_ptr<MLIRModule>> FortranEvaluator::get_mlir(
     LCompilers::PassManager pass_manager;
     pass_manager.use_default_passes();
     pass_manager.apply_passes(al, &asr, compiler_options.po, diagnostics);
-    Result<std::unique_ptr<MLIRModule>> res = asr_to_mlir(al, asr, diagnostics);
+    Result<std::unique_ptr<MLIRModule>> res = asr_to_mlir(al,
+        (ASR::asr_t &)asr, diagnostics);
     if (res.ok) {
         m = std::move(res.result);
     } else {
@@ -555,7 +556,7 @@ Result<std::unique_ptr<MLIRModule>> FortranEvaluator::get_mlir(
     }
 
     // MLIR -> LLVM
-    m->mlir_to_llvm();
+    m->mlir_to_llvm(*m->llvm_ctx);
     return m;
 #else
     throw LCompilersException("MLIR is not enabled");

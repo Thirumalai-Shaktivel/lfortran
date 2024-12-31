@@ -48,6 +48,7 @@
 #include <libasr/codegen/llvm_utils.h>
 #include <libasr/codegen/llvm_array_utils.h>
 #include <libasr/pass/intrinsic_function_registry.h>
+#include <libasr/codegen/asr_to_mlir.h>
 
 namespace LCompilers {
 
@@ -940,6 +941,29 @@ public:
             }
         }
 
+        if (compiler_options.po.enable_gpu_offloading) {
+            for (auto &item : x.m_symtab->get_scope()) {
+                if (is_a<ASR::Module_t>(*item.second) &&
+                    item.first.find("_lcompilers_mlir_gpu_offloading")
+                        != std::string::npos) {
+                    ASR::Module_t &mod = *down_cast<ASR::Module_t>(item.second);
+                    Result<std::unique_ptr<MLIRModule>>
+                        res = asr_to_mlir(al, (ASR::asr_t &)mod, diag);
+                    if (res.ok) {
+                        res.result->mlir_to_llvm(context);
+                        module = std::move(res.result->llvm_m);
+                        for(auto &s: mod.m_symtab->get_scope()) {
+                            LCOMPILERS_ASSERT(is_a<ASR::Function_t>(*s.second));
+                            uint32_t h = get_hash((ASR::asr_t*)s.second);
+                            llvm_symtab_fn[h] = module->getFunction(s.first);
+                        }
+                    } else {
+                        throw CodeGenError("ASR to MLIR Failure");
+                    }
+                }
+            }
+        }
+
         prototype_only = false;
         for (auto &item : x.m_symtab->get_scope()) {
             if (is_a<ASR::Module_t>(*item.second) &&
@@ -969,6 +993,7 @@ public:
         std::vector<std::string> build_order
             = determine_module_dependencies(x);
         for (auto &item : build_order) {
+            if (!item.compare("_lcompilers_mlir_gpu_offloading")) continue;
             LCOMPILERS_ASSERT(x.m_symtab->get_symbol(item)
                 != nullptr);
             ASR::symbol_t *mod = x.m_symtab->get_symbol(item);
