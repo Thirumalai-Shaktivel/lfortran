@@ -35,6 +35,7 @@
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
 #include <llvm/IR/DIBuilder.h>
+#include <llvm/Linker/Linker.h>
 #if LLVM_VERSION_MAJOR < 18
 #   include <llvm/Transforms/Vectorize.h>
 #endif
@@ -941,6 +942,9 @@ public:
             }
         }
 
+        // MLIR generated LLVM Module
+        std::unique_ptr<llvm::Module> mlir_llvm_module;
+#ifdef HAVE_LFORTRAN_MLIR
         if (compiler_options.po.enable_gpu_offloading) {
             for (auto &item : x.m_symtab->get_scope()) {
                 if (is_a<ASR::Module_t>(*item.second) &&
@@ -951,7 +955,7 @@ public:
                         res = asr_to_mlir(al, (ASR::asr_t &)mod, diag);
                     if (res.ok) {
                         res.result->mlir_to_llvm(context);
-                        module = std::move(res.result->llvm_m);
+                        mlir_llvm_module = std::move(res.result->llvm_m);
                         for(auto &s: mod.m_symtab->get_scope()) {
                             LCOMPILERS_ASSERT(is_a<ASR::Function_t>(*s.second));
                             uint32_t h = get_hash((ASR::asr_t*)s.second);
@@ -963,6 +967,7 @@ public:
                 }
             }
         }
+#endif
 
         prototype_only = false;
         for (auto &item : x.m_symtab->get_scope()) {
@@ -1013,6 +1018,11 @@ public:
                 visit_symbol(*item.second);
             }
         }
+#ifdef HAVE_LFORTRAN_MLIR
+        if (mlir_llvm_module) {
+            llvm::Linker::linkModules(*module, std::move(mlir_llvm_module));
+        }
+#endif
     }
 
     template <typename T>
